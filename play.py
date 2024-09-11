@@ -4,6 +4,9 @@ import requests
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
 def modify_image_url(image_url):
@@ -49,13 +52,13 @@ def extract_personal_info(session, actor_url):
                 content = ' '.join(content_element.get_text(separator=' ').split())
                 personal_info[label] = content
 
-             # Extract official sites if present
-            official_sites_section = soup.find('li', {'data-testid': 'details-officialsites'})
-            if official_sites_section:
-                official_sites = official_sites_section.find_all('a', class_='ipc-metadata-list-item__list-content-item')
-                official_site_links = [{'site_name': site.get_text(strip=True), 'site_link': site.get('href')} for site in official_sites if site.get('href')]
-                if official_site_links:
-                    personal_info['Official Sites'] = official_site_links    
+        # Extract official sites if present
+        official_sites_section = soup.find('li', {'data-testid': 'details-officialsites'})
+        if official_sites_section:
+            official_sites = official_sites_section.find_all('a', class_='ipc-metadata-list-item__list-content-item')
+            official_site_links = [{'site_name': site.get_text(strip=True), 'site_link': site.get('href')} for site in official_sites if site.get('href')]
+            if official_site_links:
+                personal_info['Official Sites'] = official_site_links    
 
         return personal_info
 
@@ -81,59 +84,70 @@ def extract_actor_data(session, driver, actor_url, full_size_image_url, actor_na
         print(f"Error extracting data for actor at {actor_url}: {e}")
         return None
 
-def extract_actor_image_and_link(driver, session, batch_size=10):
+def fetch_actor_data(actor_row, session, driver, x):
+    """Fetch actor data (image and personal details) for a given row."""
+    try:
+        image_element = actor_row.find_element(By.XPATH, f'//*[@id="fullcredits_content"]/table[3]/tbody/tr[{x}]/td[1]/a/img')
+        image_url = image_element.get_attribute('src')
+        
+        full_size_image_url = modify_image_url(image_url)
+        actor_link_element = actor_row.find_element(By.XPATH, f'//*[@id="fullcredits_content"]/table[3]/tbody/tr[{x}]/td[2]/a')
+        actor_link = actor_link_element.get_attribute('href')
+        actor_name = actor_link_element.text.strip()
+
+        actor_data = extract_actor_data(session, driver, actor_link, full_size_image_url, actor_name)
+        return actor_data
+
+    except Exception as e:
+        print(f"Error fetching data for row {x}: {e}")
+        return None
+
+def extract_actor_image_and_link(driver, session, batch_size=10, num_threads=5):
     """Extract the image URL and actor link from the IMDb full cast page, process actor data in batches, and save the data."""
     actor_batch = []
     actors_data = []
+    futures = []
 
     try:
         rows = driver.find_elements(By.XPATH, '//*[@id="fullcredits_content"]/table[3]/tbody/tr')
-        x = 2
         placeholder = "https://m.media-amazon.com/images/S/sash/N1QWYSqAfSJV62Y.png"
         
-        for index, row in enumerate(rows):
-            try:
-                if index % 2 == 1:
-                    scroll_to_element(driver, row)
-                    image_element = row.find_element(By.XPATH, f'//*[@id="fullcredits_content"]/table[3]/tbody/tr[{x}]/td[1]/a/img')
-                    image_url = image_element.get_attribute('src')
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            x = 2
+            for index, row in enumerate(rows):
+                try:
+                    if index % 2 == 1:
+                        scroll_to_element(driver, row)
 
-                    count = 0   
-                    while image_url == placeholder:
-                        count += 1
-                        if count == 3:
-                            break
-                        time.sleep(1)
-                        image_element = row.find_element(By.XPATH, f'//*[@id="fullcredits_content"]/table[3]/tbody/tr[{x}]/td[1]/a/img')
-                        image_url = image_element.get_attribute('src')
+                        # Submit the actor data extraction task to the thread pool
+                        futures.append(executor.submit(fetch_actor_data, row, session, driver, x))
+                        x += 2
 
-                    full_size_image_url = modify_image_url(image_url)
-                    actor_link_element = row.find_element(By.XPATH, f'//*[@id="fullcredits_content"]/table[3]/tbody/tr[{x}]/td[2]/a')
-                    actor_link = actor_link_element.get_attribute('href')
-                    actor_name = actor_link_element.text.strip()
-
-                    actor_data = extract_actor_data(session, driver, actor_link, full_size_image_url, actor_name)
-                    
-                    if actor_data:
-                        actors_data.append(actor_data)
-
-                    x += 2
-
-                    if len(actors_data) >= batch_size:
+                    # Process in batches
+                    if len(futures) >= batch_size:
+                        for future in as_completed(futures):
+                            result = future.result()
+                            if result:
+                                actors_data.append(result)
                         save_to_json(actors_data)
-                        actors_data = []
+                        actors_data.clear()
+                        futures.clear()
 
-            except Exception as e:
-                print(f"Error extracting image and link for row {index}: {e}")
-    
-        if actors_data:
+                except Exception as e:
+                    print(f"Error extracting image and link for row {index}: {e}")
+        
+        # Save any remaining data
+        if futures:
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    actors_data.append(result)
             save_to_json(actors_data)
 
     except Exception as e:
         print(f"Error extracting actor image and link: {e}")
     
     return actors_data
-
 
 def save_to_json(data, filename='actor_data.json'):
     """Save the given data to the JSON file."""
