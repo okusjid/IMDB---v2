@@ -49,6 +49,14 @@ def extract_personal_info(session, actor_url):
                 content = ' '.join(content_element.get_text(separator=' ').split())
                 personal_info[label] = content
 
+             # Extract official sites if present
+            official_sites_section = soup.find('li', {'data-testid': 'details-officialsites'})
+            if official_sites_section:
+                official_sites = official_sites_section.find_all('a', class_='ipc-metadata-list-item__list-content-item')
+                official_site_links = [{'site_name': site.get_text(strip=True), 'site_link': site.get('href')} for site in official_sites if site.get('href')]
+                if official_site_links:
+                    personal_info['Official Sites'] = official_site_links    
+
         return personal_info
 
     except Exception as e:
