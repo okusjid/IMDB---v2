@@ -8,6 +8,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
+import re
 
 def modify_image_url(image_url):
     """Remove resizing parameters from the image URL and keep the '@', returning the full-size image URL."""
@@ -22,6 +23,9 @@ def scroll_to_element(driver, element):
         driver.execute_script("arguments[0].scrollIntoView(true);", element)
     except Exception as e:
         print(f"Error scrolling to element: {e}")
+
+
+import re
 
 def extract_personal_info(session, actor_url):
     """Extract personal info from the actor's page using requests and BeautifulSoup."""
@@ -50,21 +54,49 @@ def extract_personal_info(session, actor_url):
             if label_element and content_element:
                 label = label_element.get_text(strip=True)
                 content = ' '.join(content_element.get_text(separator=' ').split())
-                personal_info[label] = content
+
+                # Standardize the key names
+                standardized_label = label.lower().replace(' ', '_')
+
+                # Special handling for 'born' to separate the date and location
+                if standardized_label == 'born':
+                    # Use regex to split the date and the location part
+                    born_match = re.match(r'^([\w\s]+,\s*\d{4})\s*(.+)$', content)
+
+                    if born_match:
+                        # First group is the date, second is the location
+                        birth_date = born_match.group(1).strip()
+                        birth_location = born_match.group(2).strip()
+
+                        personal_info['born'] = birth_date
+                        personal_info['born_city'] = birth_location
+                    else:
+                        # If regex does not match, default to using the whole content as date
+                        personal_info['born'] = content.strip()
+
+                else:
+                    # Add the content to personal info, cleaning if necessary
+                    personal_info[standardized_label] = content.strip()
 
         # Extract official sites if present
         official_sites_section = soup.find('li', {'data-testid': 'details-officialsites'})
         if official_sites_section:
             official_sites = official_sites_section.find_all('a', class_='ipc-metadata-list-item__list-content-item')
-            official_site_links = [{'site_name': site.get_text(strip=True), 'site_link': site.get('href')} for site in official_sites if site.get('href')]
+            official_site_links = [
+                {'site_name': site.get_text(strip=True), 'site_link': site.get('href')}
+                for site in official_sites if site.get('href')
+            ]
             if official_site_links:
-                personal_info['Official Sites'] = official_site_links    
+                personal_info['official_sites'] = official_site_links    
 
         return personal_info
 
     except Exception as e:
         print(f"Error while parsing personal details: {e}")
         return None
+
+
+
 
 def extract_actor_data(session, driver, actor_url, full_size_image_url, actor_name):
     """Extract actor's name, image URL, and personal details."""
