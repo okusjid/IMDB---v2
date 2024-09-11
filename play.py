@@ -123,8 +123,6 @@ def extract_actor_image_and_link(driver, session, batch_size=10):
                         save_to_json(actors_data)
                         actors_data = []
 
-                    if index == 31:
-                        break
             except Exception as e:
                 print(f"Error extracting image and link for row {index}: {e}")
     
